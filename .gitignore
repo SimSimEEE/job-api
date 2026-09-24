@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# 실행 중에 생기는 로그. 저장소에는 담지 않는다.
+logs.txt
+
+.DS_Store
+.env
+.env.*
