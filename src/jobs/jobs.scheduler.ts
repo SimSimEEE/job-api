@@ -6,7 +6,10 @@ import {
   type OnModuleDestroy,
 } from '@nestjs/common';
 import { SchedulerRegistry } from '@nestjs/schedule';
-import { FileLoggerService } from '../common/file-logger.service.js';
+import {
+  FileLoggerService,
+  type LogEntry,
+} from '../common/file-logger.service.js';
 import { APP_CONFIG, type AppConfig } from '../config/app.config.js';
 import type { Job } from './job.entity.js';
 import { JobsRepository } from './jobs.repository.js';
@@ -151,7 +154,11 @@ export class JobsScheduler implements OnModuleInit, OnModuleDestroy {
    * 집어갈 수 있기 때문이다.
    */
   private async claim(): Promise<{ claimed: Job[]; recovered: number }> {
-    return this.repo.mutate((draft) => {
+    // 로그는 저장이 끝난 뒤에 남긴다. mutator 안에서 바로 쓰면 저장이 실패했을 때
+    // 일어나지 않은 처리가 logs.txt 에 기록된다. 대신 저장 뒤 로그 전에 프로세스가
+    // 죽으면 그 로그는 잃는다 — 파일이 사실이고 로그는 그 기록이라 이쪽을 택했다.
+    const entries: LogEntry[] = [];
+    const result = await this.repo.mutate((draft) => {
       const now = Date.now();
       let recovered = 0;
 
@@ -163,11 +170,10 @@ export class JobsScheduler implements OnModuleInit, OnModuleDestroy {
         // 처리 도중 프로세스가 죽어 processing 에 갇힌 작업을 되돌린다.
         job.status = 'pending';
         job.startedAt = null;
-        job.error = 'Recovered from a stale processing state.';
         job.version += 1;
         job.updatedAt = new Date().toISOString();
         recovered += 1;
-        this.fileLogger.log({
+        entries.push({
           channel: 'scheduler',
           event: 'job.recovered',
           jobId: job.id,
@@ -186,7 +192,7 @@ export class JobsScheduler implements OnModuleInit, OnModuleDestroy {
         job.error = null;
         job.version += 1;
         job.updatedAt = nowIso;
-        this.fileLogger.log({
+        entries.push({
           channel: 'scheduler',
           event: 'job.claimed',
           jobId: job.id,
@@ -196,6 +202,8 @@ export class JobsScheduler implements OnModuleInit, OnModuleDestroy {
 
       return { claimed: structuredClone(targets), recovered };
     });
+    for (const entry of entries) this.fileLogger.log(entry);
+    return result;
   }
 
   /**
@@ -230,7 +238,8 @@ export class JobsScheduler implements OnModuleInit, OnModuleDestroy {
     claimedAttempts: number,
     outcome: { ok: boolean; detail: string },
   ): Promise<'completed' | 'failed' | 'skipped'> {
-    return this.repo.mutate((draft) => {
+    const entries: LogEntry[] = [];
+    const result = await this.repo.mutate((draft) => {
       const job = draft.jobs.find((candidate) => candidate.id === jobId);
       const reason = !job
         ? 'job no longer exists'
@@ -240,7 +249,7 @@ export class JobsScheduler implements OnModuleInit, OnModuleDestroy {
             ? `claimed at attempt ${claimedAttempts}, now at ${job.attempts}`
             : null;
       if (!job || reason) {
-        this.fileLogger.log({
+        entries.push({
           channel: 'scheduler',
           event: 'job.settle_skipped',
           jobId,
@@ -257,7 +266,7 @@ export class JobsScheduler implements OnModuleInit, OnModuleDestroy {
       job.version += 1;
       job.updatedAt = nowIso;
 
-      this.fileLogger.log({
+      entries.push({
         channel: 'scheduler',
         event: outcome.ok ? 'job.completed' : 'job.failed',
         jobId,
@@ -267,6 +276,8 @@ export class JobsScheduler implements OnModuleInit, OnModuleDestroy {
 
       return job.status;
     });
+    for (const entry of entries) this.fileLogger.log(entry);
+    return result;
   }
 
   private report(report: TickReport): void {

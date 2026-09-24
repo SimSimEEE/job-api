@@ -287,6 +287,44 @@ describe('스케줄러', () => {
     });
   });
 
+  describe('로그는 저장이 끝난 뒤에만 남는다', () => {
+    beforeEach(async () => {
+      h = await createHarness({ failureRate: 0 });
+      server = h.app.getHttpServer() as Server;
+    });
+
+    it('저장이 실패한 주기는 집어갔다는 기록을 남기지 않는다', async () => {
+      const [id] = await seed(1);
+
+      // 파일 쓰기만 실패하게 만든다.
+      const adapter = (
+        h.repo as unknown as {
+          db: {
+            config: { adapter: { writeAsync: (d: unknown) => Promise<void> } };
+          };
+        }
+      ).db.config.adapter;
+      const originalWrite = adapter.writeAsync.bind(adapter);
+      adapter.writeAsync = async () => {
+        throw new Error('EACCES: simulated');
+      };
+
+      await expect(h.scheduler.runOnce()).rejects.toThrow();
+      await h.logger.flush();
+
+      const events = h.readLogLines().map((line) => line.event);
+      expect(events).toContain('scheduler.tick_failed');
+      expect(events).not.toContain('job.claimed');
+
+      // 디스크도, 메모리도 집어간 적이 없다.
+      expect(h.readDbFile().jobs.find((j) => j.id === id)?.status).toBe(
+        'pending',
+      );
+      adapter.writeAsync = originalWrite;
+      expect((await h.repo.findById(id))?.status).toBe('pending');
+    });
+  });
+
   describe('주기 실패가 프로세스를 죽이지 않는다', () => {
     it('저장이 실패해도 인터벌은 계속 돌고 API 는 응답한다', async () => {
       h = await createHarness({
