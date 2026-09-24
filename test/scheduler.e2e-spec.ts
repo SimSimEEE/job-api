@@ -287,6 +287,40 @@ describe('스케줄러', () => {
     });
   });
 
+  describe('할 일이 없는 주기는 파일을 쓰지 않는다', () => {
+    beforeEach(async () => {
+      h = await createHarness({ failureRate: 0 });
+      server = h.app.getHttpServer() as Server;
+    });
+
+    it('회수할 것도 집어갈 것도 없으면 저장을 건너뛴다', async () => {
+      await seed(1);
+      await h.scheduler.runOnce(); // 처리해서 completed 로
+
+      const db = (
+        h.repo as unknown as {
+          db: { push: (...a: unknown[]) => Promise<void> };
+        }
+      ).db;
+      const originalPush = db.push.bind(db);
+      let pushes = 0;
+      db.push = (...args) => {
+        pushes += 1;
+        return originalPush(...args);
+      };
+
+      const idle = await h.scheduler.runOnce();
+      expect(idle).toMatchObject({ claimed: 0, recovered: 0 });
+      expect(pushes).toBe(0);
+
+      // 양성 대조군: 할 일이 생기면 쓴다.
+      await seed(1);
+      pushes = 0;
+      await h.scheduler.runOnce();
+      expect(pushes).toBeGreaterThan(0);
+    });
+  });
+
   describe('로그는 저장이 끝난 뒤에만 남는다', () => {
     beforeEach(async () => {
       h = await createHarness({ failureRate: 0 });

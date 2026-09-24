@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadConfig, type AppConfig } from '../config/app.config.js';
@@ -150,6 +156,31 @@ describe('JobsRepository', () => {
       const fresh = new JobsRepository(config);
       await expect(fresh.onModuleInit()).rejects.toThrow(where);
       expect(readFileSync(config.dbPath, 'utf8')).toBe(content);
+    }
+  });
+
+  it('있는 파일은 기동해도 한 바이트도 바뀌지 않는다', async () => {
+    await repo.mutate((draft) => {
+      draft.jobs.push(makeJob('keep'));
+    });
+    const bytes = readFileSync(config.dbPath, 'utf8');
+    const fresh = new JobsRepository(config);
+    await fresh.onModuleInit();
+    expect(readFileSync(config.dbPath, 'utf8')).toBe(bytes);
+    expect((await fresh.snapshot()).jobs.map((j) => j.id)).toEqual(['keep']);
+  });
+
+  it('읽기 전용인 유효한 파일로도 기동된다 — 조회는 되어야 한다', async () => {
+    await repo.mutate((draft) => {
+      draft.jobs.push(makeJob('ro'));
+    });
+    chmodSync(config.dbPath, 0o444);
+    try {
+      const fresh = new JobsRepository(config);
+      await fresh.onModuleInit();
+      expect((await fresh.snapshot()).jobs).toHaveLength(1);
+    } finally {
+      chmodSync(config.dbPath, 0o644);
     }
   });
 

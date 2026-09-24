@@ -12,6 +12,14 @@ import {
 const ROOT = '/';
 
 /**
+ * mutator 가 이 값을 돌려주면 mutate() 는 저장을 건너뛴다.
+ * 판단은 임계 구역 안에서 그대로 하고 쓰기만 생략하므로 새 경쟁 조건이 생기지 않는다.
+ * 할 일이 없는 처리기 주기가 매번 파일 전체를 다시 쓰던 것을 막는다.
+ */
+export const UNCHANGED: unique symbol = Symbol('unchanged');
+export type Unchanged = typeof UNCHANGED;
+
+/**
  * 데이터 파일을 쓸 수 없을 때 던진다. 프로세스가 뜨지 않는다.
  * 깨진 JSON 이나 모양이 다른 파일을 빈 구조로 덮어쓰면 그 안의 내용을 잃는다.
  * 없는 파일과 빈 파일만 새로 시작한다 — 잃을 것이 없기 때문이다.
@@ -71,8 +79,20 @@ export class JobsRepository implements OnModuleInit {
       }
       const normalized = this.normalize(current);
       this.validateRecords(normalized);
-      await this.db.push(ROOT, normalized, true);
+      // 파일이 없거나 비어 있을 때만 만든다. 있는 파일은 검증만 하고 쓰지 않는다 —
+      // 기동만으로 파일이 바뀌면 안 되고, 읽기 전용 파일도 조회는 되어야 한다.
+      if (this.isBlank(current)) await this.db.push(ROOT, normalized, true);
     });
+  }
+
+  private isBlank(data: unknown): boolean {
+    return (
+      data === null ||
+      data === undefined ||
+      (typeof data === 'object' &&
+        !Array.isArray(data) &&
+        Object.keys(data as object).length === 0)
+    );
   }
 
   /** 경합 상황을 테스트에서 확인하기 위한 값. */
@@ -116,6 +136,7 @@ export class JobsRepository implements OnModuleInit {
       );
       const draft = this.normalize(structuredClone(before));
       const result = await mutator(draft);
+      if ((result as unknown) === UNCHANGED) return result;
       try {
         await this.db.push(ROOT, structuredClone(draft), true);
       } catch (err) {

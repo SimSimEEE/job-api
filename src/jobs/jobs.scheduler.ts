@@ -12,7 +12,7 @@ import {
 } from '../common/file-logger.service.js';
 import { APP_CONFIG, type AppConfig } from '../config/app.config.js';
 import type { Job } from './job.entity.js';
-import { JobsRepository } from './jobs.repository.js';
+import { JobsRepository, UNCHANGED } from './jobs.repository.js';
 
 const INTERVAL_NAME = 'job-processing';
 
@@ -200,10 +200,12 @@ export class JobsScheduler implements OnModuleInit, OnModuleDestroy {
         });
       }
 
+      // 회수한 것도 집어간 것도 없으면 쓰지 않는다. 판단은 임계 구역 안에서 그대로 했다.
+      if (recovered === 0 && targets.length === 0) return UNCHANGED;
       return { claimed: structuredClone(targets), recovered };
     });
     for (const entry of entries) this.fileLogger.log(entry);
-    return result;
+    return result === UNCHANGED ? { claimed: [], recovered: 0 } : result;
   }
 
   /**
@@ -255,7 +257,7 @@ export class JobsScheduler implements OnModuleInit, OnModuleDestroy {
           jobId,
           reason,
         });
-        return 'skipped' as const;
+        return UNCHANGED;
       }
 
       const nowIso = new Date().toISOString();
@@ -277,7 +279,7 @@ export class JobsScheduler implements OnModuleInit, OnModuleDestroy {
       return job.status;
     });
     for (const entry of entries) this.fileLogger.log(entry);
-    return result;
+    return result === UNCHANGED ? 'skipped' : result;
   }
 
   private report(report: TickReport): void {
