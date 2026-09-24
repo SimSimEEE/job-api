@@ -27,6 +27,7 @@ declare module 'express-serve-static-core' {
  *   기록되지 않는다. 미들웨어는 매칭 여부와 무관하게 모든 요청을 거치고,
  *   응답의 'finish' 이벤트에서 최종 상태 코드와 소요 시간을 얻을 수 있다.
  *   클라이언트가 중간에 끊으면 'finish' 없이 'close' 만 오므로 그 경우도 기록한다.
+ *   setup.ts 에서 app.use() 로 body-parser 보다 앞에 붙인다 — 파서가 거부한 요청도 남기려고.
  */
 @Injectable()
 export class RequestLoggerMiddleware implements NestMiddleware {

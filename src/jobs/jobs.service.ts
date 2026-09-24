@@ -15,7 +15,7 @@ import type {
   PaginationQueryDto,
 } from './dto/search-jobs.dto.js';
 import type { UpdateJobDto } from './dto/update-job.dto.js';
-import type { Job, JobDatabase } from './job.entity.js';
+import type { Job, JobDatabase, JobStatus } from './job.entity.js';
 import {
   canClientTransition,
   clientTransitionsFrom,
@@ -140,60 +140,77 @@ export class JobsService {
       const job = draft.jobs.find((candidate) => candidate.id === id);
       if (!job) throw new JobNotFoundException(id);
 
-      const wantsContentChange =
-        dto.title !== undefined || dto.description !== undefined;
-      if (!wantsContentChange && dto.status === undefined) {
+      if (
+        dto.title === undefined &&
+        dto.description === undefined &&
+        dto.status === undefined
+      ) {
         throw new EmptyUpdateException();
       }
 
       if (ifMatch !== undefined) {
-        const expected = ifMatch.replace(/^W\//, '').replace(/"/g, '').trim();
-        if (expected !== String(job.version)) {
-          throw new VersionConflictException(expected, job.version);
+        const tags = this.parseIfMatch(ifMatch);
+        if (!tags.some((tag) => tag === '*' || tag === String(job.version))) {
+          throw new VersionConflictException(tags.join(', '), job.version);
         }
       }
 
-      if (wantsContentChange && !isContentEditable(job.status)) {
+      // 바뀔 결과를 먼저 만들고, 현재와 비교해서 실제로 달라지는 것만 쓴다.
+      const next: Job = { ...job };
+      if (dto.title !== undefined) next.title = dto.title;
+      if (dto.description !== undefined) next.description = dto.description;
+
+      const contentChanges =
+        next.title !== job.title || next.description !== job.description;
+      if (contentChanges && !isContentEditable(job.status)) {
         throw new ContentNotEditableException(job.status);
       }
 
-      if (dto.status !== undefined && dto.status !== job.status) {
-        if (!canClientTransition(job.status, dto.status)) {
+      // 지금 상태를 그대로 보내는 것은 전이가 아니다. 검사도, 쓰기도 하지 않는다.
+      const statusChanges =
+        dto.status !== undefined && dto.status !== job.status;
+      if (statusChanges) {
+        const to = dto.status as JobStatus;
+        if (!canClientTransition(job.status, to)) {
           throw new InvalidTransitionException(
             job.status,
-            dto.status,
+            to,
             clientTransitionsFrom(job.status),
           );
         }
         // failed → pending 재투입. 지난 실행의 흔적을 지워 깨끗한 상태로 되돌린다.
-        job.status = dto.status;
-        job.startedAt = null;
-        job.finishedAt = null;
-        job.error = null;
-        job.result = null;
+        next.status = to;
+        next.startedAt = null;
+        next.finishedAt = null;
+        next.error = null;
+        next.result = null;
       }
 
-      if (dto.title !== undefined) job.title = dto.title;
-      if (dto.description !== undefined) job.description = dto.description;
+      // 결과가 현재와 같으면 쓰지 않는다. 버전만 올리고 ETag 를 무효화하는 것을 막는다.
+      if (!contentChanges && !statusChanges) throw new EmptyUpdateException();
 
-      job.version += 1;
-      job.updatedAt = new Date().toISOString();
-
+      next.version = job.version + 1;
+      next.updatedAt = new Date().toISOString();
+      Object.assign(job, next);
       return structuredClone(job);
     });
   }
 
   /**
-
-
-   * 키 길이 상한. 키는 파일에 영구 저장되므로 상한이 없으면 키 하나로 파일을 부풀릴 수 있다.
-
-
-   * 인증이 없어 키의 범위는 전역이다 — 두 클라이언트가 같은 키를 쓰면 서로의 결과를 본다.
-
-
+   * RFC 9110 의 If-Match.
+   * 값은 쉼표로 여러 개 올 수 있고, "*" 는 자원이 존재하기만 하면 일치한다.
+   * 약한 검증자 표시(W/)와 따옴표는 벗기고 버전 숫자와 비교한다.
    */
+  private parseIfMatch(ifMatch: string): string[] {
+    return ifMatch
+      .split(',')
+      .map((tag) => tag.trim().replace(/^W\//, '').replace(/^"|"$/g, ''));
+  }
 
+  /**
+   * 키 길이 상한. 키는 파일에 영구 저장되므로 상한이 없으면 키 하나로 파일을 부풀릴 수 있다.
+   * 인증이 없어 키의 범위는 전역이다 — 두 클라이언트가 같은 키를 쓰면 서로의 결과를 본다.
+   */
   private static readonly IDEMPOTENCY_KEY_MAX = 128;
 
   private assertValidIdempotencyKey(key: string): void {

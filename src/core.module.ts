@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { FileLoggerService } from './common/file-logger.service.js';
+import { RequestLoggerMiddleware } from './common/request-logger.middleware.js';
 import { APP_CONFIG, loadConfig } from './config/app.config.js';
 
 /**
@@ -11,7 +12,8 @@ import { APP_CONFIG, loadConfig } from './config/app.config.js';
   providers: [
     { provide: APP_CONFIG, useFactory: () => loadConfig() },
     FileLoggerService,
+    RequestLoggerMiddleware,
   ],
-  exports: [APP_CONFIG, FileLoggerService],
+  exports: [APP_CONFIG, FileLoggerService, RequestLoggerMiddleware],
 })
 export class CoreModule {}

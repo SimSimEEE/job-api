@@ -42,7 +42,7 @@ export class EmptyUpdateException extends DomainException {
   constructor() {
     super(
       'EMPTY_UPDATE',
-      'PATCH body must contain at least one of: title, description, status.',
+      'PATCH would change nothing. Send title, description or status with a value different from the current one.',
       HttpStatus.BAD_REQUEST,
     );
   }

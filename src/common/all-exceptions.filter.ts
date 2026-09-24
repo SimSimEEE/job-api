@@ -69,6 +69,18 @@ export class AllExceptionsFilter implements ExceptionFilter {
     details?: unknown;
   } {
     if (!(exception instanceof HttpException)) {
+      // Express 와 body-parser 가 던지는 오류(413 본문 초과, 400 JSON 파싱 실패 등)는
+      // Nest 의 HttpException 이 아니지만 status 를 갖는다. 그 코드를 존중해야
+      // 클라이언트 잘못이 서버 오류(500)로 둔갑하지 않는다.
+      const status = this.expressStatus(exception);
+      if (status !== null) {
+        return {
+          statusCode: status,
+          code: this.fallbackCode(status),
+          message:
+            exception instanceof Error ? exception.message : String(exception),
+        };
+      }
       return {
         statusCode: HttpStatus.INTERNAL_SERVER_ERROR,
         code: 'INTERNAL_ERROR',
@@ -110,6 +122,19 @@ export class AllExceptionsFilter implements ExceptionFilter {
     };
   }
 
+  /** 4xx 범위의 숫자 status/statusCode 를 가진 오류만 클라이언트 오류로 본다. */
+  private expressStatus(exception: unknown): number | null {
+    if (typeof exception !== 'object' || exception === null) return null;
+    const candidate = exception as { status?: unknown; statusCode?: unknown };
+    const status =
+      typeof candidate.status === 'number'
+        ? candidate.status
+        : typeof candidate.statusCode === 'number'
+          ? candidate.statusCode
+          : null;
+    return status !== null && status >= 400 && status < 500 ? status : null;
+  }
+
   private fallbackCode(statusCode: number): string {
     const known: Record<number, string> = {
       400: 'BAD_REQUEST',
@@ -117,6 +142,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
       405: 'METHOD_NOT_ALLOWED',
       409: 'CONFLICT',
       412: 'PRECONDITION_FAILED',
+      413: 'PAYLOAD_TOO_LARGE',
       415: 'UNSUPPORTED_MEDIA_TYPE',
     };
     return known[statusCode] ?? `HTTP_${statusCode}`;

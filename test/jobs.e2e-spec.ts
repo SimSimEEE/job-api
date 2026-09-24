@@ -51,6 +51,17 @@ describe('Jobs API', () => {
       expect(res.body.description).toBe('');
     });
 
+    it('공백만인 title 은 400', async () => {
+      const res = await create({ title: '   ' });
+      expect(res.status).toBe(400);
+    });
+
+    it('description 에 null 을 보내면 400 — 생략과 null 은 다르다', async () => {
+      const res = await create({ title: 'ok', description: null });
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('VALIDATION_FAILED');
+    });
+
     it('title 이 없으면 400', async () => {
       const res = await create({ description: 'orphan' });
       expect(res.status).toBe(400);
@@ -228,6 +239,77 @@ describe('Jobs API', () => {
       expect(res.body.code).toBe('VALIDATION_FAILED');
     });
 
+    it('title 에 null 을 보내면 400 이고 저장되지 않는다', async () => {
+      const created = await create({ title: 'keep me' });
+      const res = await request(server)
+        .patch(`/jobs/${created.body.id}`)
+        .send({ title: null });
+
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('VALIDATION_FAILED');
+      const job = h.readDbFile().jobs.find((j) => j.id === created.body.id);
+      expect(job?.title).toBe('keep me');
+
+      // 이 뒤에 제목 검색이 살아 있어야 한다. null 이 저장됐다면 여기서 500 이 난다.
+      const search = await request(server).get('/jobs/search?title=keep');
+      expect(search.status).toBe(200);
+      expect(search.body.meta.total).toBe(1);
+    });
+
+    it('status 에 null 을 보내면 400', async () => {
+      const created = await create({ title: 'x' });
+      const res = await request(server)
+        .patch(`/jobs/${created.body.id}`)
+        .send({ status: null });
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('VALIDATION_FAILED');
+    });
+
+    it('지금 상태를 그대로 보내면 400 이고 버전이 오르지 않는다', async () => {
+      const created = await create({ title: 'same' });
+      const res = await request(server)
+        .patch(`/jobs/${created.body.id}`)
+        .send({ status: 'pending' });
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('EMPTY_UPDATE');
+      expect(
+        h.readDbFile().jobs.find((j) => j.id === created.body.id)?.version,
+      ).toBe(1);
+    });
+
+    it('completed 에 completed 를 다시 보내도 400 — 종착 상태는 건드릴 수 없다', async () => {
+      const created = await create({ title: 'done' });
+      await h.scheduler.runOnce();
+      const before = h
+        .readDbFile()
+        .jobs.find((j) => j.id === created.body.id)!.version;
+      const res = await request(server)
+        .patch(`/jobs/${created.body.id}`)
+        .send({ status: 'completed' });
+      expect(res.status).toBe(400);
+      expect(
+        h.readDbFile().jobs.find((j) => j.id === created.body.id)?.version,
+      ).toBe(before);
+    });
+
+    it('같은 값으로 title 을 보내면 400 — 아무것도 바뀌지 않는다', async () => {
+      const created = await create({ title: 'unchanged' });
+      const res = await request(server)
+        .patch(`/jobs/${created.body.id}`)
+        .send({ title: 'unchanged' });
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('EMPTY_UPDATE');
+    });
+
+    it('If-Match: * 는 자원이 있으면 통과한다', async () => {
+      const created = await create({ title: 'star' });
+      const res = await request(server)
+        .patch(`/jobs/${created.body.id}`)
+        .set('If-Match', '*')
+        .send({ title: 'starred' });
+      expect(res.status).toBe(200);
+    });
+
     it('If-Match 가 맞으면 통과한다', async () => {
       const created = await create({ title: 'etag ok' });
       const res = await request(server)
@@ -357,6 +439,24 @@ describe('Jobs API', () => {
         expect(typeof res.body.timestamp).toBe('string');
         expect(typeof res.body.requestId).toBe('string');
       }
+    });
+
+    it('본문이 너무 크면 500 이 아니라 413 이고 모양이 같다', async () => {
+      const res = await request(server)
+        .post('/jobs')
+        .send({ title: 'x'.repeat(200 * 1024) });
+      expect(res.status).toBe(413);
+      expect(res.body.code).toBe('PAYLOAD_TOO_LARGE');
+      expect(typeof res.body.requestId).toBe('string');
+    });
+
+    it('JSON 이 깨진 본문은 400', async () => {
+      const res = await request(server)
+        .post('/jobs')
+        .set('Content-Type', 'application/json')
+        .send('{"title": ');
+      expect(res.status).toBe(400);
+      expect(typeof res.body.code).toBe('string');
     });
 
     it('응답의 x-request-id 와 본문의 requestId 가 같다', async () => {

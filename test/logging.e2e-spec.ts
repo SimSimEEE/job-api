@@ -73,6 +73,20 @@ describe('logs.txt 기록', () => {
     expect(codes).toContain(404);
   });
 
+  it('본문 파서가 거부한 요청(413)도 남는다', async () => {
+    await request(server)
+      .post('/jobs')
+      .send({ title: 'x'.repeat(200 * 1024) });
+    await h.logger.flush();
+    const entry = h.readLogLines().find((line) => line.statusCode === 413);
+    expect(entry).toMatchObject({
+      channel: 'http',
+      method: 'POST',
+      path: '/jobs',
+    });
+    expect(typeof entry?.requestId).toBe('string');
+  });
+
   it('라우트에 잡히지 않은 요청도 남는다', async () => {
     // 인터셉터 대신 미들웨어를 쓴 이유가 이것이다.
     await request(server).get('/no-such-route');
