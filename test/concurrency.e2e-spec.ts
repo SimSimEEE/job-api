@@ -37,7 +37,8 @@ const workloads = {
     );
     return id;
   },
-  async mixed(server: Server, h: Harness): Promise<void> {
+  /** 혼합 워크로드의 시드. 음성 대조군에서는 이 단계를 잠금을 켠 채로 돌린다. */
+  async seedForMixed(server: Server): Promise<void> {
     await Promise.all(
       Array.from({ length: 40 }, (_, i) =>
         request(server)
@@ -45,9 +46,14 @@ const workloads = {
           .send({ title: `mixed-${i}` }),
       ),
     );
+  },
+  /**
+   * 처리기 한 주기와 API 요청을 동시에 돌린다.
+   * 처리기는 한 번만 부른다 — running 표시 때문에 겹친 호출은 어차피 건너뛰어,
+   * 세 번 불러도 실제로 도는 것은 하나뿐이다(외부 검토가 로그로 확인).
+   */
+  async mixed(server: Server, h: Harness): Promise<void> {
     await Promise.all([
-      h.scheduler.runOnce(),
-      h.scheduler.runOnce(),
       h.scheduler.runOnce(),
       ...Array.from({ length: 20 }, (_, i) =>
         request(server)
@@ -111,6 +117,7 @@ describe('동시성 — 가드를 켠 상태', () => {
   });
 
   it('API 요청과 스케줄러가 같이 돌아도 상태가 깨지지 않는다', async () => {
+    await workloads.seedForMixed(server);
     await workloads.mixed(server, h);
     const jobs = h.readDbFile().jobs;
     expect(jobs).toHaveLength(60);
@@ -139,7 +146,6 @@ describe('동시성 — 음성 대조군: 실제 가드를 끄면 같은 워크�
 
   beforeEach(async () => {
     h = await createHarness();
-    h.disableSerialization();
     server = h.app.getHttpServer() as Server;
   });
   afterEach(async () => {
@@ -150,11 +156,13 @@ describe('동시성 — 음성 대조군: 실제 가드를 끄면 같은 워크�
   // 위 블록의 같은 테스트는 가드 덕분에 통과하는 것이 아니다.
 
   it('동시 생성 100건 → 유실된다', async () => {
+    h.disableSerialization();
     await workloads.create100(server);
     expect(h.readDbFile().jobs.length).toBeLessThan(100);
   });
 
   it('동시 수정 50건 → 버전이 모자란다', async () => {
+    h.disableSerialization();
     const id = await workloads.patch50(server);
     expect(h.readDbFile().jobs.find((j) => j.id === id)?.version).toBeLessThan(
       51,
@@ -162,12 +170,18 @@ describe('동시성 — 음성 대조군: 실제 가드를 끄면 같은 워크�
   });
 
   it('같은 멱등 키 25건 → 여러 개 만들어진다', async () => {
+    h.disableSerialization();
     const { distinctIds, fresh } = await workloads.idempotent25(h);
     expect(distinctIds).toBeGreaterThan(1);
     expect(fresh).toBeGreaterThan(1);
   });
 
   it('API + 스케줄러 혼합 → 유실된다', async () => {
+    // 시드는 잠금을 켠 채로 넣는다. 그래야 유실이 시드 단계가 아니라
+    // 처리기와 요청이 겹치는 구간에서 난 것임을 분리해서 볼 수 있다.
+    await workloads.seedForMixed(server);
+    expect(h.readDbFile().jobs).toHaveLength(40);
+    h.disableSerialization();
     await workloads.mixed(server, h);
     expect(h.readDbFile().jobs.length).toBeLessThan(60);
   });
