@@ -38,6 +38,14 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ SCHEDULER_INTERVAL_MS: '-10' })).toThrow(/>= 1/);
   });
 
+  it('PORT 도 같은 검증을 거친다', () => {
+    expect(loadConfig({}).port).toBe(3000);
+    expect(loadConfig({ PORT: '8080' }).port).toBe(8080);
+    expect(() => loadConfig({ PORT: 'abc' })).toThrow(InvalidConfigError);
+    expect(() => loadConfig({ PORT: '70000' })).toThrow(/<= 65535/);
+    expect(() => loadConfig({ PORT: '0' })).toThrow(/>= 1/);
+  });
+
   it('불리언은 true/false/1/0 만 받는다', () => {
     expect(() => loadConfig({ SCHEDULER_ENABLED: 'yes' })).toThrow(
       InvalidConfigError,

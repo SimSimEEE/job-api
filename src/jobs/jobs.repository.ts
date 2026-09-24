@@ -7,6 +7,20 @@ import { emptyDatabase, type Job, type JobDatabase } from './job.entity.js';
 const ROOT = '/';
 
 /**
+ * 데이터 파일을 쓸 수 없을 때 던진다. 프로세스가 뜨지 않는다.
+ * 깨진 JSON 이나 모양이 다른 파일을 빈 구조로 덮어쓰면 그 안의 내용을 잃는다.
+ * 없는 파일과 빈 파일만 새로 시작한다 — 잃을 것이 없기 때문이다.
+ */
+export class InvalidDataFileError extends Error {
+  constructor(path: string, reason: string) {
+    super(
+      `Data file '${path}' cannot be used: ${reason}. Fix the file, or remove it to start fresh.`,
+    );
+    this.name = 'InvalidDataFileError';
+  }
+}
+
+/**
  * 데이터 파일에 닿는 유일한 통로.
  *
  * 설계의 핵심은 두 가지다.
@@ -38,8 +52,18 @@ export class JobsRepository implements OnModuleInit {
   async onModuleInit(): Promise<void> {
     // 파일이 없거나 비어 있으면 빈 구조를 만들어 둔다.
     // 이후 모든 읽기가 jobs / idempotency 키의 존재를 가정할 수 있게 한다.
+    // 파일이 있는데 읽을 수 없거나 모양이 다르면 덮어쓰지 않고 기동을 멈춘다.
     await this.mutex.runExclusive(async () => {
-      const current = await this.readRaw();
+      let current: unknown;
+      try {
+        current = await this.readRaw();
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        throw new InvalidDataFileError(
+          this.config.dbPath,
+          `not valid JSON (${detail})`,
+        );
+      }
       await this.db.push(ROOT, this.normalize(current), true);
     });
   }
@@ -79,28 +103,62 @@ export class JobsRepository implements OnModuleInit {
     return this.mutex.runExclusive(async () => {
       const draft = this.normalize(await this.readRaw());
       const result = await mutator(draft);
-      await this.db.push(ROOT, structuredClone(draft), true);
+      try {
+        await this.db.push(ROOT, structuredClone(draft), true);
+      } catch (err) {
+        // node-json-db 는 메모리를 먼저 바꾸고 그 다음 파일에 쓴다. 쓰기가 실패하면
+        // 메모리에만 남아, 이후 읽기가 저장된 적 없는 상태를 보게 된다.
+        // 디스크 내용으로 되돌려 "500 을 받았는데 만들어져 있다"는 상태를 막는다.
+        try {
+          await this.db.reload();
+        } catch {
+          // 디스크도 못 읽으면 되돌릴 기준이 없다. 원래 오류를 그대로 올린다.
+        }
+        throw err;
+      }
       return result;
     });
   }
 
-  private async readRaw(): Promise<Partial<JobDatabase> | null> {
+  private async readRaw(): Promise<unknown> {
     // getData 는 내부 참조를 돌려준다. 여기서 복사해 바깥으로 새지 않게 한다.
-    const data = await this.db.getObjectDefault<Partial<JobDatabase>>(
-      ROOT,
-      emptyDatabase(),
-    );
+    const data = await this.db.getObjectDefault<unknown>(ROOT, emptyDatabase());
     return structuredClone(data);
   }
 
-  /** 손으로 편집된 파일이나 예전 형식도 받아 주기 위한 보정. */
-  private normalize(data: Partial<JobDatabase> | null): JobDatabase {
+  /**
+   * 파일 내용을 검사해 정해진 모양으로 만든다.
+   * 없거나 빈 파일은 새로 시작하고, 내용이 있는데 모양이 다르면 덮어쓰지 않고 거부한다.
+   */
+  private normalize(data: unknown): JobDatabase {
+    if (data === null || data === undefined) return emptyDatabase();
+    if (typeof data !== 'object' || Array.isArray(data)) {
+      throw new InvalidDataFileError(
+        this.config.dbPath,
+        'top level must be an object',
+      );
+    }
+    const record = data as Record<string, unknown>;
+    if (Object.keys(record).length === 0) return emptyDatabase();
+    if (record.jobs !== undefined && !Array.isArray(record.jobs)) {
+      throw new InvalidDataFileError(
+        this.config.dbPath,
+        '"jobs" must be an array',
+      );
+    }
+    const idem = record.idempotency;
+    if (
+      idem !== undefined &&
+      (typeof idem !== 'object' || idem === null || Array.isArray(idem))
+    ) {
+      throw new InvalidDataFileError(
+        this.config.dbPath,
+        '"idempotency" must be an object',
+      );
+    }
     return {
-      jobs: Array.isArray(data?.jobs) ? data.jobs : [],
-      idempotency:
-        data?.idempotency && typeof data.idempotency === 'object'
-          ? data.idempotency
-          : {},
+      jobs: (record.jobs as JobDatabase['jobs']) ?? [],
+      idempotency: (idem as JobDatabase['idempotency']) ?? {},
     };
   }
 }

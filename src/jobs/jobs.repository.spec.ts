@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadConfig, type AppConfig } from '../config/app.config.js';
-import { JobsRepository } from './jobs.repository.js';
+import { InvalidDataFileError, JobsRepository } from './jobs.repository.js';
 import type { Job } from './job.entity.js';
 
 const makeJob = (id: string): Job => ({
@@ -102,13 +102,74 @@ describe('JobsRepository', () => {
     expect(peak).toBeGreaterThan(0);
   });
 
-  it('손으로 편집된 파일도 받아 준다', async () => {
-    // jobs 키가 없거나 형식이 어긋난 파일에서도 죽지 않아야 한다.
-    writeFileSync(config.dbPath, JSON.stringify({ jobs: 'not an array' }));
+  it('깨진 JSON 파일이면 기동하지 않고 파일을 건드리지 않는다', async () => {
+    writeFileSync(config.dbPath, '{"jobs": [');
+    const fresh = new JobsRepository(config);
+    await expect(fresh.onModuleInit()).rejects.toThrow(InvalidDataFileError);
+    await expect(fresh.onModuleInit()).rejects.toThrow(config.dbPath);
+    expect(readFileSync(config.dbPath, 'utf8')).toBe('{"jobs": [');
+  });
+
+  it('모양이 다른 파일이면 덮어쓰지 않고 거부한다', async () => {
+    for (const bad of [
+      '{"jobs": "not an array"}',
+      '[]',
+      '{"idempotency": []}',
+    ]) {
+      writeFileSync(config.dbPath, bad);
+      const fresh = new JobsRepository(config);
+      await expect(fresh.onModuleInit()).rejects.toThrow(InvalidDataFileError);
+      expect(readFileSync(config.dbPath, 'utf8')).toBe(bad);
+    }
+  });
+
+  it('없는 파일과 빈 파일은 새로 시작한다', async () => {
+    writeFileSync(config.dbPath, '');
     const fresh = new JobsRepository(config);
     await fresh.onModuleInit();
-
     expect(await fresh.snapshot()).toEqual({ jobs: [], idempotency: {} });
+  });
+
+  it('쓰기가 실패하면 메모리를 디스크 내용으로 되돌린다', async () => {
+    await repo.mutate((draft) => {
+      draft.jobs.push(makeJob('persisted'));
+    });
+
+    // 파일 쓰기만 실패하게 만든다. node-json-db 는 이 전에 이미 메모리를 바꾼다.
+    const adapter = (
+      repo as unknown as {
+        db: {
+          config: { adapter: { writeAsync: (d: unknown) => Promise<void> } };
+        };
+      }
+    ).db.config.adapter;
+    const originalWrite = adapter.writeAsync.bind(adapter);
+    adapter.writeAsync = async () => {
+      throw new Error('EACCES: simulated');
+    };
+
+    await expect(
+      repo.mutate((draft) => {
+        draft.jobs.push(makeJob('phantom'));
+      }),
+    ).rejects.toThrow(/save the database/); // node-json-db 가 원인을 감싼다
+
+    // 실패한 쓰기의 흔적이 메모리에 남아 있으면 안 된다.
+    expect((await repo.snapshot()).jobs.map((j) => j.id)).toEqual([
+      'persisted',
+    ]);
+
+    adapter.writeAsync = originalWrite;
+    await repo.mutate((draft) => {
+      draft.jobs.push(makeJob('after'));
+    });
+    expect((await repo.snapshot()).jobs.map((j) => j.id)).toEqual([
+      'persisted',
+      'after',
+    ]);
+    expect(JSON.parse(readFileSync(config.dbPath, 'utf8')).jobs).toHaveLength(
+      2,
+    );
   });
 
   it('사람이 읽을 수 있는 형태로 저장한다', async () => {

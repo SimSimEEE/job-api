@@ -3,6 +3,8 @@
  * 테스트는 임시 파일 경로와 스케줄러 비활성화를 주입해서 쓴다.
  */
 export interface AppConfig {
+  /** 수신 포트 */
+  port: number;
   /** 데이터 JSON 파일 경로 */
   dbPath: string;
   /** 요청·스케줄러 로그 파일 경로 */
@@ -76,6 +78,7 @@ const bool = (
 export const loadConfig = (
   env: NodeJS.ProcessEnv = process.env,
 ): AppConfig => ({
+  port: num('PORT', env.PORT, 3000, { min: 1, max: 65535 }),
   dbPath: env.JOBS_DB_PATH ?? './jobs.json',
   logPath: env.LOG_FILE_PATH ?? './logs.txt',
   schedulerEnabled: bool('SCHEDULER_ENABLED', env.SCHEDULER_ENABLED, true),
