@@ -72,7 +72,10 @@ export class JobsScheduler implements OnModuleInit, OnModuleDestroy {
     // 주기를 환경변수로 바꿀 수 있어야 하므로 @Interval 데코레이터(상수) 대신
     // SchedulerRegistry 에 실행 시점에 등록한다.
     const interval = setInterval(() => {
-      void this.runOnce();
+      // runOnce 는 실패를 scheduler.tick_failed 로 기록한 뒤 다시 던진다(테스트가 그 동작을 본다).
+      // 여기서 받지 않으면 unhandled rejection 이 되고, Node 는 그것으로 프로세스를 내린다.
+      // 백그라운드 주기의 디스크 오류 한 번이 API 까지 죽여서는 안 된다.
+      this.runOnce().catch(() => undefined);
     }, this.config.schedulerIntervalMs);
     this.registry.addInterval(INTERVAL_NAME, interval);
     this.logger.log(

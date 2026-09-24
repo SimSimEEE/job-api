@@ -287,6 +287,37 @@ describe('스케줄러', () => {
     });
   });
 
+  describe('주기 실패가 프로세스를 죽이지 않는다', () => {
+    it('저장이 실패해도 인터벌은 계속 돌고 API 는 응답한다', async () => {
+      h = await createHarness({
+        schedulerEnabled: true,
+        schedulerIntervalMs: 30,
+        failureRate: 0,
+      });
+      server = h.app.getHttpServer() as Server;
+
+      // 디스크 쓰기 실패를 흉내 낸다. 이 뒤로 모든 주기가 던진다.
+      (h.repo as unknown as { mutate: () => Promise<never> }).mutate =
+        async () => {
+          throw new Error('EACCES: simulated write failure');
+        };
+
+      // 몇 주기가 지나가게 둔다. 수정 전에는 첫 실패에서 unhandled rejection 으로 죽었다.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      await h.logger.flush();
+
+      const failed = h
+        .readLogLines()
+        .filter((line) => line.event === 'scheduler.tick_failed');
+      expect(failed.length).toBeGreaterThanOrEqual(2);
+      expect(failed[0].message).toMatch(/simulated write failure/);
+
+      // 프로세스가 살아 있고 읽기 경로는 그대로 동작한다.
+      const res = await request(server).get('/jobs');
+      expect(res.status).toBe(200);
+    });
+  });
+
   describe('설정', () => {
     it('비활성화하면 주기가 등록되지 않는다', async () => {
       h = await createHarness({ schedulerEnabled: false });
