@@ -160,7 +160,57 @@ describe('JobsRepository', () => {
     expect(await fresh.snapshot()).toEqual({ jobs: [], idempotency: {} });
   });
 
-  it('쓰기가 실패하면 메모리를 디스크 내용으로 되돌린다', async () => {
+  it('쓰기 도중 실패로 파일이 잘려도 기존 데이터를 잃지 않는다', async () => {
+    // node-json-db 의 파일 어댑터는 open('w') 로 먼저 비우고 쓴다.
+    // 디스크 가득 참처럼 쓰는 도중 실패하면 파일은 0바이트로 남는다.
+    for (const id of ['a', 'b', 'c']) {
+      await repo.mutate((draft) => {
+        draft.jobs.push(makeJob(id));
+      });
+    }
+
+    const fileAdapter = (
+      repo as unknown as {
+        db: {
+          config: {
+            adapter: { adapter: { writeAsync: (d: string) => Promise<void> } };
+          };
+        };
+      }
+    ).db.config.adapter.adapter;
+    const originalWrite = fileAdapter.writeAsync.bind(fileAdapter);
+    fileAdapter.writeAsync = async () => {
+      writeFileSync(config.dbPath, ''); // open('w') 가 한 일
+      throw new Error('ENOSPC: simulated');
+    };
+
+    await expect(
+      repo.mutate((draft) => {
+        draft.jobs.push(makeJob('lost-write'));
+      }),
+    ).rejects.toThrow();
+    expect(readFileSync(config.dbPath, 'utf8')).toBe(''); // 파일은 잘린 상태
+
+    // 실패한 변경은 없고, 그 전 데이터는 남아 있어야 한다.
+    expect((await repo.snapshot()).jobs.map((j) => j.id)).toEqual([
+      'a',
+      'b',
+      'c',
+    ]);
+
+    // 디스크가 복구된 뒤 다음 쓰기가 파일 전체를 되살려야 한다.
+    fileAdapter.writeAsync = originalWrite;
+    await repo.mutate((draft) => {
+      draft.jobs.push(makeJob('d'));
+    });
+    expect(
+      JSON.parse(readFileSync(config.dbPath, 'utf8')).jobs.map(
+        (j: { id: string }) => j.id,
+      ),
+    ).toEqual(['a', 'b', 'c', 'd']);
+  });
+
+  it('쓰기가 실패하면 실패한 변경이 메모리에 남지 않는다', async () => {
     await repo.mutate((draft) => {
       draft.jobs.push(makeJob('persisted'));
     });

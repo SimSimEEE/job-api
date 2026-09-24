@@ -108,19 +108,25 @@ export class JobsRepository implements OnModuleInit {
    */
   async mutate<T>(mutator: (draft: JobDatabase) => Promise<T> | T): Promise<T> {
     return this.mutex.runExclusive(async () => {
-      const draft = this.normalize(await this.readRaw());
+      // 쓰기 직전의 메모리 객체를 그대로 붙들어 둔다(복사 아님). 루트 push 는 이 객체를
+      // 바꾸지 않고 새 객체로 교체하므로, 쓰기가 실패하면 이걸로 되돌릴 수 있다.
+      const before = await this.db.getObjectDefault<unknown>(
+        ROOT,
+        emptyDatabase(),
+      );
+      const draft = this.normalize(structuredClone(before));
       const result = await mutator(draft);
       try {
         await this.db.push(ROOT, structuredClone(draft), true);
       } catch (err) {
         // node-json-db 는 메모리를 먼저 바꾸고 그 다음 파일에 쓴다. 쓰기가 실패하면
-        // 메모리에만 남아, 이후 읽기가 저장된 적 없는 상태를 보게 된다.
-        // 디스크 내용으로 되돌려 "500 을 받았는데 만들어져 있다"는 상태를 막는다.
-        try {
-          await this.db.reload();
-        } catch {
-          // 디스크도 못 읽으면 되돌릴 기준이 없다. 원래 오류를 그대로 올린다.
-        }
+        // 메모리만 앞서 나가, 이후 읽기가 저장된 적 없는 상태를 보게 된다.
+        //
+        // 디스크에서 다시 읽으면 안 된다. 파일 어댑터가 open('w') 로 먼저 비우기
+        // 때문에 쓰는 도중 실패하면 파일은 0바이트이고, 그걸 읽으면 빈 DB 가 되어
+        // 다음 성공하는 쓰기가 빈 DB 를 확정한다 — 일시적 오류가 영구 손실이 된다.
+        // 쓰기 직전 메모리 상태로 되돌리면 다음 쓰기가 파일 전체를 다시 살린다.
+        this.db.resetData(before);
         throw err;
       }
       return result;
