@@ -2,7 +2,12 @@ import { Inject, Injectable, type OnModuleInit } from '@nestjs/common';
 import { JsonDB, Config as JsonDbConfig } from 'node-json-db';
 import { APP_CONFIG, type AppConfig } from '../config/app.config.js';
 import { Mutex } from '../common/mutex.js';
-import { emptyDatabase, type Job, type JobDatabase } from './job.entity.js';
+import {
+  emptyDatabase,
+  JOB_STATUSES,
+  type Job,
+  type JobDatabase,
+} from './job.entity.js';
 
 const ROOT = '/';
 
@@ -64,7 +69,9 @@ export class JobsRepository implements OnModuleInit {
           `not valid JSON (${detail})`,
         );
       }
-      await this.db.push(ROOT, this.normalize(current), true);
+      const normalized = this.normalize(current);
+      this.validateRecords(normalized);
+      await this.db.push(ROOT, normalized, true);
     });
   }
 
@@ -118,6 +125,72 @@ export class JobsRepository implements OnModuleInit {
       }
       return result;
     });
+  }
+
+  /**
+   * 레코드 하나하나의 필드와 타입을 본다. 기동할 때 한 번만 부른다 —
+   * 이후 쓰는 것은 전부 이 코드가 만든 값이라 다시 볼 필요가 없다.
+   * 최상위 모양만 보고 통과시키면 `title: null` 인 레코드 하나가 검색을 죽이고
+   * 처리기의 `attempts += 1` 을 NaN 으로 만든다.
+   */
+  private validateRecords(db: JobDatabase): void {
+    const fail = (where: string, why: string): never => {
+      throw new InvalidDataFileError(this.config.dbPath, `${where} ${why}`);
+    };
+    const seen = new Set<string>();
+    db.jobs.forEach((job, index) => {
+      const at = `jobs[${index}]`;
+      const record = job as unknown as Record<string, unknown>;
+      if (
+        typeof record !== 'object' ||
+        record === null ||
+        Array.isArray(record)
+      ) {
+        fail(at, 'must be an object');
+      }
+      for (const field of [
+        'id',
+        'title',
+        'description',
+        'createdAt',
+        'updatedAt',
+      ]) {
+        if (typeof record[field] !== 'string')
+          fail(`${at}.${field}`, 'must be a string');
+      }
+      if (seen.has(record.id as string)) fail(`${at}.id`, 'is a duplicate');
+      seen.add(record.id as string);
+      if (
+        !(JOB_STATUSES as readonly string[]).includes(record.status as string)
+      ) {
+        fail(`${at}.status`, `must be one of ${JOB_STATUSES.join(', ')}`);
+      }
+      if (!Number.isInteger(record.version) || (record.version as number) < 1) {
+        fail(`${at}.version`, 'must be an integer >= 1');
+      }
+      if (
+        !Number.isInteger(record.attempts) ||
+        (record.attempts as number) < 0
+      ) {
+        fail(`${at}.attempts`, 'must be an integer >= 0');
+      }
+      for (const field of ['startedAt', 'finishedAt', 'result', 'error']) {
+        if (record[field] !== null && typeof record[field] !== 'string') {
+          fail(`${at}.${field}`, 'must be a string or null');
+        }
+      }
+    });
+    for (const [key, entry] of Object.entries(db.idempotency)) {
+      const record = entry as unknown as Record<string, unknown> | null;
+      if (
+        typeof record !== 'object' ||
+        record === null ||
+        typeof record.jobId !== 'string' ||
+        typeof record.requestHash !== 'string'
+      ) {
+        fail(`idempotency["${key}"]`, 'must have string jobId and requestHash');
+      }
+    }
   }
 
   private async readRaw(): Promise<unknown> {

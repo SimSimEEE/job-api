@@ -88,7 +88,7 @@ export const loadConfig = (
     'SCHEDULER_INTERVAL_MS',
     env.SCHEDULER_INTERVAL_MS,
     10_000,
-    { min: 1 },
+    { min: 100 },
   ),
   schedulerBatchSize: num('SCHEDULER_BATCH_SIZE', env.SCHEDULER_BATCH_SIZE, 5, {
     min: 1,

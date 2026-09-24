@@ -35,7 +35,7 @@ describe('loadConfig', () => {
   it('범위를 벗어나면 실패한다', () => {
     expect(() => loadConfig({ JOB_FAILURE_RATE: '1.5' })).toThrow(/<= 1/);
     expect(() => loadConfig({ SCHEDULER_BATCH_SIZE: '0' })).toThrow(/>= 1/);
-    expect(() => loadConfig({ SCHEDULER_INTERVAL_MS: '-10' })).toThrow(/>= 1/);
+    expect(() => loadConfig({ SCHEDULER_INTERVAL_MS: '1' })).toThrow(/>= 100/);
   });
 
   it('PORT 도 같은 검증을 거친다', () => {

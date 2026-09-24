@@ -123,6 +123,36 @@ describe('JobsRepository', () => {
     }
   });
 
+  it('레코드 하나라도 필드가 틀리면 몇 번째인지 찍고 거부한다', async () => {
+    const base =
+      '"description":"","createdAt":"x","updatedAt":"x","startedAt":null,"finishedAt":null,"result":null,"error":null';
+    const cases: Array<[string, string]> = [
+      [
+        `{"jobs":[{"id":"a","title":null,"status":"pending","version":1,"attempts":0,${base}}]}`,
+        'jobs[0].title',
+      ],
+      [
+        `{"jobs":[{"id":"a","title":"t","status":"weird","version":1,"attempts":0,${base}}]}`,
+        'jobs[0].status',
+      ],
+      [
+        `{"jobs":[{"id":"a","title":"t","status":"pending","version":1,${base}}]}`,
+        'jobs[0].attempts',
+      ],
+      [
+        `{"jobs":[{"id":"a","title":"t","status":"pending","version":1,"attempts":0,${base}},{"id":"a","title":"u","status":"pending","version":1,"attempts":0,${base}}]}`,
+        'jobs[1].id',
+      ],
+      ['{"jobs":[],"idempotency":{"k":1}}', 'idempotency["k"]'],
+    ];
+    for (const [content, where] of cases) {
+      writeFileSync(config.dbPath, content);
+      const fresh = new JobsRepository(config);
+      await expect(fresh.onModuleInit()).rejects.toThrow(where);
+      expect(readFileSync(config.dbPath, 'utf8')).toBe(content);
+    }
+  });
+
   it('없는 파일과 빈 파일은 새로 시작한다', async () => {
     writeFileSync(config.dbPath, '');
     const fresh = new JobsRepository(config);
