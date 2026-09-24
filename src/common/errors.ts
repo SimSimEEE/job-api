@@ -60,6 +60,17 @@ export class ContentNotEditableException extends DomainException {
   }
 }
 
+/** If-Match 값이 엔티티 태그(버전 숫자)도 "*" 도 아님. 안 맞는 버전(412)이 아니라 잘못된 요청. */
+export class InvalidIfMatchException extends DomainException {
+  constructor(value: string) {
+    super(
+      'IF_MATCH_INVALID',
+      `If-Match must be a version tag like "3", or *. Got: ${value}`,
+      HttpStatus.BAD_REQUEST,
+    );
+  }
+}
+
 /** Idempotency-Key 헤더 형식 오류. */
 export class InvalidIdempotencyKeyException extends DomainException {
   constructor(reason: string) {

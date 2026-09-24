@@ -5,6 +5,7 @@ import {
   EmptyUpdateException,
   IdempotencyKeyReuseException,
   InvalidIdempotencyKeyException,
+  InvalidIfMatchException,
   InvalidTransitionException,
   JobNotFoundException,
   VersionConflictException,
@@ -58,19 +59,22 @@ export class JobsService {
     }
     const requestHash = this.hashRequest(dto);
 
+    if (idempotencyKey) {
+      // 재요청은 잠금 밖에서 먼저 확인한다. 키가 있으면 읽기만으로 끝나고 파일을
+      // 다시 쓰지 않는다. 없으면 임계 구역으로 들어가 다시 확인한다 — 여기서
+      // 못 본 사이에 다른 요청이 만들었을 수 있다.
+      const replay = this.replayFor(
+        await this.repo.snapshot(),
+        idempotencyKey,
+        requestHash,
+      );
+      if (replay) return replay;
+    }
+
     return this.repo.mutate((draft) => {
       if (idempotencyKey) {
-        const seen = draft.idempotency[idempotencyKey];
-        if (seen) {
-          if (seen.requestHash !== requestHash) {
-            throw new IdempotencyKeyReuseException(idempotencyKey);
-          }
-          const existing = draft.jobs.find((job) => job.id === seen.jobId);
-          if (existing) {
-            return { job: structuredClone(existing), replayed: true };
-          }
-          // 기록은 있는데 작업이 없다면(손으로 지운 경우 등) 새로 만든다.
-        }
+        const replay = this.replayFor(draft, idempotencyKey, requestHash);
+        if (replay) return replay;
       }
 
       const now = new Date().toISOString();
@@ -202,9 +206,31 @@ export class JobsService {
    * 약한 검증자 표시(W/)와 따옴표는 벗기고 버전 숫자와 비교한다.
    */
   private parseIfMatch(ifMatch: string): string[] {
-    return ifMatch
+    const tags = ifMatch
       .split(',')
       .map((tag) => tag.trim().replace(/^W\//, '').replace(/^"|"$/g, ''));
+    // 버전은 숫자다. 숫자도 "*" 도 아닌 값은 "안 맞는 버전"이 아니라 잘못된 요청이다.
+    const bad = tags.find((tag) => tag !== '*' && !/^\d+$/.test(tag));
+    if (bad !== undefined) throw new InvalidIfMatchException(ifMatch);
+    return tags;
+  }
+
+  /**
+   * 같은 멱등 키의 기록이 있으면 그 작업을 돌려주고, 없으면 null.
+   * 같은 키에 다른 본문이면 던진다. 기록은 있는데 작업이 지워졌으면 null 로 새로 만들게 한다.
+   */
+  private replayFor(
+    db: JobDatabase,
+    key: string,
+    requestHash: string,
+  ): CreateResult | null {
+    const seen = db.idempotency[key];
+    if (!seen) return null;
+    if (seen.requestHash !== requestHash) {
+      throw new IdempotencyKeyReuseException(key);
+    }
+    const existing = db.jobs.find((job) => job.id === seen.jobId);
+    return existing ? { job: structuredClone(existing), replayed: true } : null;
   }
 
   /**

@@ -100,6 +100,25 @@ describe('Jobs API', () => {
       expect(h.readDbFile().jobs).toHaveLength(0);
     });
 
+    it('재요청은 파일을 다시 쓰지 않는다', async () => {
+      await create({ title: 'once' }).set('Idempotency-Key', 'ro');
+
+      const repo = h.repo as unknown as {
+        mutate: (...args: unknown[]) => Promise<unknown>;
+      };
+      const original = repo.mutate.bind(h.repo);
+      let writes = 0;
+      repo.mutate = (...args) => {
+        writes += 1;
+        return original(...args);
+      };
+
+      const res = await create({ title: 'once' }).set('Idempotency-Key', 'ro');
+      expect(res.status).toBe(201);
+      expect(res.headers['idempotent-replay']).toBe('true');
+      expect(writes).toBe(0);
+    });
+
     it('같은 멱등 키로 다른 본문이 오면 409', async () => {
       await create({ title: 'first' }).set('Idempotency-Key', 'dup');
       const res = await create({ title: 'second' }).set(
@@ -299,6 +318,16 @@ describe('Jobs API', () => {
         .send({ title: 'unchanged' });
       expect(res.status).toBe(400);
       expect(res.body.code).toBe('EMPTY_UPDATE');
+    });
+
+    it('If-Match 가 숫자도 * 도 아니면 412 가 아니라 400', async () => {
+      const created = await create({ title: 'bad tag' });
+      const res = await request(server)
+        .patch(`/jobs/${created.body.id}`)
+        .set('If-Match', 'abc')
+        .send({ title: 'x' });
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('IF_MATCH_INVALID');
     });
 
     it('If-Match: * 는 자원이 있으면 통과한다', async () => {
