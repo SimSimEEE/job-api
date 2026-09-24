@@ -22,6 +22,7 @@ npm run test:e2e   # HTTP 요청을 실제로 보내는 통합 테스트 (동시
 `jobs.json` 에 표본 7건이 있어 바로 조회됩니다. 띄워 두면 10초마다 처리기가 `pending`
 작업을 처리하고 `logs.txt` 가 한 줄씩 쌓입니다. 표본 중 하나(`Rebuild search index`)는
 처리 도중 중단된 모습으로 두었습니다 — 첫 실행에 `job.recovered` 가 찍히고 다시 처리됩니다.
+실행하면 처리기가 `jobs.json` 을 고치므로 `git status` 가 더러워집니다. `git checkout jobs.json` 으로 되돌립니다.
 
 설정은 전부 환경변수이고 기본값으로 동작합니다.
 
@@ -89,6 +90,23 @@ curl -X POST localhost:3000/jobs -H 'Content-Type: application/json' \
   -d '{"title": "Send welcome email", "description": "신규 가입자 대상"}'
 ```
 
+```json
+{
+  "id": "7a4b1c08-5b0f-4d92-934b-b48b0ca823fc",
+  "title": "Send welcome email",
+  "description": "신규 가입자 대상",
+  "status": "pending",
+  "version": 1,
+  "attempts": 0,
+  "createdAt": "2026-09-24T03:15:48.232Z",
+  "updatedAt": "2026-09-24T03:15:48.232Z",
+  "startedAt": null,
+  "finishedAt": null,
+  "result": null,
+  "error": null
+}
+```
+
 `Idempotency-Key` 헤더를 주면 같은 키의 재요청은 처음 만든 작업을 그대로 돌려줍니다
 (`Idempotent-Replay: true`). 같은 키에 다른 본문이면 `409`. 키 조회와 생성이 같은 임계
 구역 안에 있어야 합니다 — 따로 하면 동시에 온 두 요청이 둘 다 "아직 없다"를 읽고 둘 다
@@ -115,6 +133,8 @@ curl -X POST localhost:3000/jobs -H 'Content-Type: application/json' \
 curl -X PATCH localhost:3000/jobs/<id> -H 'Content-Type: application/json' \
   -H 'If-Match: "3"' -d '{"title": "v2"}'
 ```
+
+`200` 과 바뀐 작업 객체(`POST` 응답과 같은 모양, `version` 이 하나 오른 값). 응답 헤더 `ETag` 도 새 값입니다.
 
 `If-Match` 는 선택입니다. 주면 읽은 시점의 버전과 비교해 어긋나면 `412`, 안 주면 마지막
 쓰기가 이깁니다. 필수로 하고 없으면 `428` 을 주는 쪽도 검토했는데, 그러면 `failed → pending`
@@ -211,7 +231,7 @@ curl -X PATCH localhost:3000/jobs/<id> -H 'Content-Type: application/json' \
 생성은 깨지는데 이것만 통과하는 이유는 확정하지 못했습니다. 서비스를 같은 틱에서 25번
 부르면 뮤텍스 없이 25건이 전부 새로 만들어지는 것은 확인했고, 그래서 표에는 이쪽을 넣었습니다.
 
-98건(단위 32 + 통합 66) 통과.
+99건(단위 32 + 통합 67) 통과.
 
 ## 로깅
 
@@ -270,6 +290,13 @@ node v22.21.1 · darwin/arm64 · 순차 쓰기 30회
 - **`running` 표시의 설명을 고침.** 코드는 맞고 설명이 틀린 상태였습니다.
 - **직접 정한 것.** 주기 10초·5건, `PATCH` 는 세 필드만, 자동 재시도 없음, `DELETE` 없음
   (넣는다면 삭제보다 `canceled` 상태가 이력이 남아 낫다고 봅니다).
+  `@nestjs/schedule` 은 `@Interval` 데코레이터 대신 `SchedulerRegistry` 로 씁니다 — 데코레이터
+  인자는 상수라 주기를 환경변수로 받으려면 실행 시점에 등록해야 합니다.
+- **주기 실패가 프로세스를 죽이던 것.** 인터벌 콜백이 `runOnce()` 의 거부를 받지 않아, 디스크
+  쓰기 오류 한 번에 unhandled rejection 으로 서버 전체가 내려갔습니다. 파일을 읽기 전용으로
+  바꿔 주입해 보니 `tick_failed` 를 남기고 바로 종료했고 API 도 같이 죽었습니다. 콜백에서
+  받도록 고쳤고(기록은 그대로 남습니다) 같은 주입으로 살아남는 테스트를 넣었습니다.
+  "로거는 던지지 않는다"고 적어 놓고 정작 처리기가 던지는 것을 놓쳤습니다.
 
 ## 시간이 더 있다면
 
