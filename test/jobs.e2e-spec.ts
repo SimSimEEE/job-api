@@ -100,6 +100,31 @@ describe('Jobs API', () => {
       expect(h.readDbFile().jobs).toHaveLength(0);
     });
 
+    it("'constructor' 같은 키도 보통 키처럼 동작한다", async () => {
+      for (const key of ['constructor', 'toString', 'hasOwnProperty']) {
+        const first = await create({ title: key }).set('Idempotency-Key', key);
+        expect(first.status).toBe(201);
+        expect(first.headers['idempotent-replay']).toBe('false');
+        const again = await create({ title: key }).set('Idempotency-Key', key);
+        expect(again.status).toBe(201);
+        expect(again.body.id).toBe(first.body.id);
+      }
+      expect(Object.keys(h.readDbFile().idempotency).sort()).toEqual([
+        'constructor',
+        'hasOwnProperty',
+        'toString',
+      ]);
+    });
+
+    it("'__proto__' 는 키로 받지 않는다 — 저장이 아니라 프로토타입 교체가 된다", async () => {
+      const res = await create({ title: 'x' }).set(
+        'Idempotency-Key',
+        '__proto__',
+      );
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('IDEMPOTENCY_KEY_INVALID');
+    });
+
     it('재요청은 파일을 다시 쓰지 않는다', async () => {
       await create({ title: 'once' }).set('Idempotency-Key', 'ro');
 
@@ -318,6 +343,24 @@ describe('Jobs API', () => {
         .send({ title: 'unchanged' });
       expect(res.status).toBe(400);
       expect(res.body.code).toBe('EMPTY_UPDATE');
+    });
+
+    it('빈 본문이어도 If-Match 가 어긋나면 400 이 아니라 412', async () => {
+      const created = await create({ title: 'order' });
+      const res = await request(server)
+        .patch(`/jobs/${created.body.id}`)
+        .set('If-Match', '"99"')
+        .send({});
+      expect(res.status).toBe(412);
+    });
+
+    it('약한 검증자 W/"n" 은 버전이 같아도 일치하지 않는다', async () => {
+      const created = await create({ title: 'weak' });
+      const res = await request(server)
+        .patch(`/jobs/${created.body.id}`)
+        .set('If-Match', 'W/"1"')
+        .send({ title: 'x' });
+      expect(res.status).toBe(412);
     });
 
     it('If-Match 가 숫자도 * 도 아니면 412 가 아니라 400', async () => {

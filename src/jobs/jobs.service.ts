@@ -144,19 +144,20 @@ export class JobsService {
       const job = draft.jobs.find((candidate) => candidate.id === id);
       if (!job) throw new JobNotFoundException(id);
 
+      // 선행 조건을 본문보다 먼저 본다. 빈 본문이어도 버전이 어긋났으면 412 다.
+      if (ifMatch !== undefined) {
+        const tags = this.parseIfMatch(ifMatch);
+        if (!tags.some((tag) => tag === '*' || tag === String(job.version))) {
+          throw new VersionConflictException(tags.join(', '), job.version);
+        }
+      }
+
       if (
         dto.title === undefined &&
         dto.description === undefined &&
         dto.status === undefined
       ) {
         throw new EmptyUpdateException();
-      }
-
-      if (ifMatch !== undefined) {
-        const tags = this.parseIfMatch(ifMatch);
-        if (!tags.some((tag) => tag === '*' || tag === String(job.version))) {
-          throw new VersionConflictException(tags.join(', '), job.version);
-        }
       }
 
       // 바뀔 결과를 먼저 만들고, 현재와 비교해서 실제로 달라지는 것만 쓴다.
@@ -203,14 +204,15 @@ export class JobsService {
   /**
    * RFC 9110 의 If-Match.
    * 값은 쉼표로 여러 개 올 수 있고, "*" 는 자원이 존재하기만 하면 일치한다.
-   * 약한 검증자 표시(W/)와 따옴표는 벗기고 버전 숫자와 비교한다.
+   * 약한 검증자(W/"3")는 If-Match 에서 절대 일치하지 않는다 — 우리 ETag 는 강한 검증자다.
+   * W/ 는 남겨 둬서 버전 숫자와 같아질 수 없게 하고, 따옴표만 벗긴다.
    */
   private parseIfMatch(ifMatch: string): string[] {
     const tags = ifMatch
       .split(',')
-      .map((tag) => tag.trim().replace(/^W\//, '').replace(/^"|"$/g, ''));
-    // 버전은 숫자다. 숫자도 "*" 도 아닌 값은 "안 맞는 버전"이 아니라 잘못된 요청이다.
-    const bad = tags.find((tag) => tag !== '*' && !/^\d+$/.test(tag));
+      .map((tag) => tag.trim().replace(/^(W\/)?"(.*)"$/, '$1$2'));
+    // 버전은 숫자(약한 표시가 붙었을 수 있음)다. 그 외는 "안 맞는 버전"이 아니라 잘못된 요청.
+    const bad = tags.find((tag) => tag !== '*' && !/^(W\/)?\d+$/.test(tag));
     if (bad !== undefined) throw new InvalidIfMatchException(ifMatch);
     return tags;
   }
@@ -224,8 +226,9 @@ export class JobsService {
     key: string,
     requestHash: string,
   ): CreateResult | null {
+    // 프로토타입 체인을 타지 않는다. 'constructor' 같은 키가 "이미 있는 기록"으로 보이면 안 된다.
+    if (!Object.hasOwn(db.idempotency, key)) return null;
     const seen = db.idempotency[key];
-    if (!seen) return null;
     if (seen.requestHash !== requestHash) {
       throw new IdempotencyKeyReuseException(key);
     }
@@ -240,6 +243,11 @@ export class JobsService {
   private static readonly IDEMPOTENCY_KEY_MAX = 128;
 
   private assertValidIdempotencyKey(key: string): void {
+    // obj['__proto__'] = x 는 키를 저장하는 게 아니라 객체의 프로토타입을 바꾼다.
+    // 기록이 조용히 사라지므로 이 키만은 따로 거부한다.
+    if (key === '__proto__') {
+      throw new InvalidIdempotencyKeyException('must not be "__proto__"');
+    }
     if (key.trim() === '') {
       throw new InvalidIdempotencyKeyException('must not be blank');
     }
